@@ -68,7 +68,7 @@ def main() -> None:
     # if not api_key:
     #     raise RuntimeError("Set GEMINI_API_KEY in your environment before running this script.")
 
-    client = genai.Client(api_key="AIzaSyAWIM-VgeUDh-9WsGt9A_aZJUOPYAaIkt0")
+    client = genai.Client(api_key="")
 
     with INPUT_PATH.open("r", encoding="utf-8") as f:
         data = [json.loads(line) for line in f]
