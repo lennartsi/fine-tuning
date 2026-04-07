@@ -3,6 +3,16 @@ import torch
 from PIL import Image
 import os
 from pathlib import Path
+import json
+import re
+from pydantic import BaseModel, ValidationError
+from typing import Optional
+
+
+class SmokeAnalysisAnswer(BaseModel):
+    """Schema for smoke detection response"""
+    reasoning: str
+    decision: Optional[bool]
 class VLM:
     def __init__(self, model_id="Qwen/Qwen3-VL-8B-Instruct", device=None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -22,8 +32,8 @@ class VLM:
             quantization_config=quantization_config,
         )
 
-        adapter_path = r"U:\Fraunhofer Waldbrand\Fine_tuning\qwen3-8b-instruct-fine-tune-V3"
-        self.model.load_adapter(adapter_path)
+        # adapter_path = r"U:\Fraunhofer Waldbrand\Fine_tuning\qwen3-8b-instruct-fine-tune-V3"
+        # self.model.load_adapter(adapter_path)
         self._sync_lora_to_base_devices()
 
     def _sync_lora_to_base_devices(self):
@@ -44,40 +54,46 @@ class VLM:
                 if lora_b is not None and lora_b.weight.device != target_device:
                     lora_b.to(target_device)
 
-    def analyze(self, image):
-        # prompt = "Is the smoke in the middle of the image coming from burning vegetation (trees, forest, grass)? Answer ONLY with the letter:\
-        #             D: can't be determined with certainty\
-        #             B: no (chimney, cloud, fog, industrial)\
-        #             C: there is no smoke in the image.\
-        #             A: yes (wildfire/vegetation fire)"
-        # prompt = "You are tasked with detecting wildfire smoke. Is there smoke in the image? If yes, is it coming from burning vegetation (trees, forest, grass)? Answer ONLY with the letter:\
-        #             B: no there is no smoke in the image\
-        #             C: there is smoke in the image, but it's not coming from burning vegetation\
-        #             A: there is smoke in the image and it's coming from burning vegetation\
-        #             D: it can't be determined whether there is smoke or not, or where it's coming from"
-        # prompt = """You are tasked with detecting wildfire smoke.
+    def _parse_json_response(self, text: str) -> dict:
+        """Extract and parse JSON from model output, handling various formats"""
+        text = text.strip()
+        
+        # Try direct JSON parse first
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to find JSON object in text (handles markdown code blocks, extra text, etc.)
+        try:
+            match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+        
+        raise ValueError(f"Could not extract valid JSON from model output: {text}")
+    
+    def _validate_response(self, data: dict) -> SmokeAnalysisAnswer:
+        """Validate response against schema and return typed object"""
+        try:
+            return SmokeAnalysisAnswer.model_validate(data)
+        except ValidationError as e:
+            raise ValueError(f"Response validation failed: {e}")
+    
+    def analyze(self, image) -> SmokeAnalysisAnswer:
+        prompt = """You are tasked with detecting wildfire smoke in images.
 
-        #         Determine:
-        #         1. Is there visible smoke in the image?
-        #         2. If yes, is the smoke coming from burning vegetation (trees, forest, grass)?
+Question: Is there smoke in this image coming from burning vegetation (trees, forest, grass)?
 
-        #         Answer with ONLY the letter:
-        #         A: Smoke is present and is coming from burning vegetation
-        #         B: No smoke is present. This includes:
-        #         - images with nothing resembling smoke
-        #         - images with fog, clouds
-        #         C: Smoke is present, but NOT from burning vegetation (e.g., chimney industrial)
-        #         D: It cannot be determined whether there is smoke or its source
-        #         """
-        prompt = """You are tasked with detecting wildfire smoke.
+Respond with ONLY valid JSON in this exact format, no markdown, no extra text:
+{
+  "reasoning": "Your analysis of why this is true or false (mention presence/absence of smoke, characteristics, confidence). Keep the reasoning brief, ideally one sentence.",
+    "decision": true, false, or null
+}
 
-                Determine:
-                Is there smoke in the image coming from burning vegetation (trees, forest, grass)?
-
-                Answer with ONLY the letter:
-                A: yes, Smoke is present and is coming from burning vegetation
-                B: no (e.g., there is no smoke, or there is smoke but it's from a non-vegetation source like a chimney or industrial)
-                """
+Return ONLY the JSON object. true = smoke from vegetation, false = no smoke or non-vegetation smoke (chimney, clouds, industrial), null = unsure/cannot determine."""
+        
         messages = [
             {
                 "role": "user",
@@ -97,27 +113,45 @@ class VLM:
         ).to(self.model.device)
 
         with torch.inference_mode():
-            outputs = self.model.generate(**inputs, max_new_tokens=2, do_sample=False)
+            # Increased max_new_tokens to allow full JSON response (e.g., ~150 chars)
+            outputs = self.model.generate(
+                **inputs, 
+                max_new_tokens=100,  # Changed from 2 to allow JSON output
+                do_sample=False  # Deterministic for consistent format
+            )
 
-        answer = self.processor.decode(
+        decoded_text = self.processor.decode(
             outputs[0][inputs["input_ids"].shape[-1]:],
             skip_special_tokens=True
         )
-
-        return answer.strip()
+        print(f"Decoded model output: {decoded_text}")
+        # Parse and validate JSON response
+        try:
+            json_data = self._parse_json_response(decoded_text)
+            validated_response = self._validate_response(json_data)
+            return validated_response
+        except (ValueError, ValidationError) as e:
+            print(f"Warning: Failed to parse/validate response: {e}")
+            print(f"Raw response: {decoded_text}")
+            # Return a default response on parse failure
+            return SmokeAnalysisAnswer(
+                reasoning=f"Model output: {decoded_text[:100]}",
+                decision=None
+            )
 
 
 if __name__ == "__main__":
     vlm = VLM()
-    forestfireinsight_folder = r"U:\Fraunhofer Waldbrand\Testbilder\Kamera_Balkon\Images_smoke_cropped"
+    forestfireinsight_folder = r"U:\Fraunhofer Waldbrand\Testbilder\Reasoning_test"
     positives = 0
     for image_path in Path(forestfireinsight_folder).iterdir():
         if image_path.is_file() and image_path.suffix.lower() in [".png", ".jpg", ".jpeg"]:
             image = Image.open(image_path).convert("RGB")
             print(f"Analyzing {image_path.name}...")
             result = vlm.analyze(image)
-            if result == "A":
+            # result is now a SmokeAnalysisAnswer object with reasoning and decision fields
+            if result.decision:  # true = smoke from vegetation
                 positives += 1
-            print(f"Result: {result}")
+            print(f"Result: decision={result.decision}, reasoning={result.reasoning}")
     print(f"Total positives: {positives}")
-    print(f"rate of positives: {positives/len(list(Path(forestfireinsight_folder).iterdir())):.2%}")
+    print(f"Rate of positives: {positives/len(list(Path(forestfireinsight_folder).iterdir())):.2%}")

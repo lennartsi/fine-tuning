@@ -9,9 +9,9 @@ from datasets import load_dataset
 import torch
 from PIL import Image
 
-no_smoke = r"U:\Fraunhofer Waldbrand\Testbilder\TrainingDataset\CroppedData\No_smoke"
-chimney_cloud_fog_industrial = r"U:\Fraunhofer Waldbrand\Testbilder\TrainingDataset\CroppedData\Chimney_fog"
-fire = r"U:\Fraunhofer Waldbrand\Testbilder\TrainingDataset\CroppedData\Fire"
+no_smoke = r"U:\Fraunhofer Waldbrand\Testbilder\TrainingDataset\CroppedData\Train\No_smoke"
+chimney_cloud_fog_industrial = r"U:\Fraunhofer Waldbrand\Testbilder\TrainingDataset\CroppedData\Train\Chimney_fog"
+fire = r"U:\Fraunhofer Waldbrand\Testbilder\TrainingDataset\CroppedData\Train\Fire"
 with open("data.csv", "w") as f:
     writer = csv.writer(f)
     writer.writerow(["image_path", "question", "answer"])
@@ -25,7 +25,7 @@ with open("data.csv", "w") as f:
                 Answer with ONLY the letter:
                 A: yes, Smoke is present and is coming from burning vegetation
                 B: no (e.g., there is no smoke, or there is smoke but it's from a non-vegetation source like a chimney or industrial)
-                c: it can't be determined whether there is smoke or its source""","B"])
+                c: it can't be determined whether there is smoke or its source""","C"])
     for image_path in Path(chimney_cloud_fog_industrial).iterdir():
         if image_path.is_file() and image_path.suffix.lower() in [".png", ".jpg", ".jpeg"]:
             writer.writerow([str(image_path),"""You are tasked with detecting wildfire smoke.
